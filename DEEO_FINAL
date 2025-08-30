@@ -2,9 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+from torchvision import datasets, transforms
 import numpy as np
-import random  # For simulating latency in profile_kernel
-
 # DEEO Optimizer (with E8 Cartan matrix eigendecomposition from DULA framework, enhanced with mod 6 congruence in eigenvalue selection)
 class DEEO(optim.Optimizer):
     def __init__(self, params, lr=0.001, iterations=3, beta=0.9):
@@ -108,37 +107,65 @@ class DEEO(optim.Optimizer):
                 p.data.sub_(update_view)
             idx += numel
         return loss
-
-# Meta-optimize kernel config with DEEO
-class KernelConfig(nn.Module):
+# MLP for EMNIST digits (using matrix multiplications via linear layers)
+class EMNISTMLP(nn.Module):
     def __init__(self):
-        super().__init__()
-        self.params = nn.Parameter(torch.tensor([256.0, 32.0, 4096.0]))  # e.g., block_x, block_y, shared_mem
-
-def generate_cuda_llm(params):
-    # Placeholder: Generate CUDA code string based on params (in real use, prompt an LLM)
-    block_x, block_y, shared_mem = params.round().int().tolist()
-    return f"""
-__global__ void matrix_mul_kernel(float *A, float *B, float *C, int N) {{
-    __shared__ float sA[{shared_mem}];
-    int bx = blockIdx.x, by = blockIdx.y;
-    int tx = threadIdx.x, ty = threadIdx.y;
-    // Simulated code for matrix mul with params: block ({block_x}, {block_y}), shared {shared_mem}
-}}
-"""
-
-def profile_kernel(kernel_code):
-    # Placeholder: Simulate profiling latency (in real use, compile/run on GPU and measure time)
-    # For demo, random latency based on "good" params (lower for better configs)
-    return random.uniform(1.0, 10.0)  # ms
-
+        super(EMNISTMLP, self).__init__()
+        self.fc1 = nn.Linear(784, 512)
+        self.fc2 = nn.Linear(512, 256)
+        self.fc3 = nn.Linear(256, 10)
+    def forward(self, x):
+        x = x.view(-1, 784)
+        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc2(x))
+        x = self.fc3(x)
+        return F.log_softmax(x, dim=1)
+# Data loaders
+transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
+train_dataset = datasets.EMNIST('.', split='digits', train=True, download=True, transform=transform)
+test_dataset = datasets.EMNIST('.', split='digits', train=False, transform=transform)
+train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=64, shuffle=True)
+test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=1000, shuffle=False)
+# Model, optimizer, device
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-config_model = KernelConfig().to(device)
-deeo = DEEO(config_model.parameters(), lr=1.0, iterations=3, beta=0.9)  # High LR for discrete-ish space
-for iter in range(50):
-    kernel_code = generate_cuda_llm(config_model.params)
-    latency = profile_kernel(kernel_code)
-    loss = torch.tensor(latency, requires_grad=True)  # Surrogate loss (in real, differentiable proxy)
-    loss.backward()  # Backprop through surrogate or approx (in practice, use autograd-friendly latency estimator)
-    deeo.step()
-    print(f"Iter {iter+1}, Config: {config_model.params.data.tolist()}, Latency: {latency:.4f}")
+model = EMNISTMLP().to(device)
+optimizer = DEEO(list(model.parameters()), lr=0.001, iterations=3, beta=0.9)
+# Train function
+def train(epoch):
+    model.train()
+    train_loss = 0
+    correct = 0
+    for data, target in train_loader:
+        data, target = data.to(device), target.to(device)
+        optimizer.zero_grad()
+        output = model(data)
+        loss = F.nll_loss(output, target)
+        loss.backward()
+        optimizer.step()
+        train_loss += loss.item() * data.size(0)
+        pred = output.argmax(dim=1, keepdim=True)
+        correct += pred.eq(target.view_as(pred)).sum().item()
+    train_loss /= len(train_dataset)
+    acc = 100. * correct / len(train_dataset)
+    print(f'Epoch {epoch}, Train Loss: {train_loss:.4f}, Accuracy: {acc:.2f}%')
+    return train_loss, acc
+# Test function
+def test():
+    model.eval()
+    test_loss = 0
+    correct = 0
+    with torch.no_grad():
+        for data, target in test_loader:
+            data, target = data.to(device), target.to(device)
+            output = model(data)
+            test_loss += F.nll_loss(output, target, reduction='sum').item()
+            pred = output.argmax(dim=1, keepdim=True)
+            correct += pred.eq(target.view_as(pred)).sum().item()
+    test_loss /= len(test_dataset)
+    acc = 100. * correct / len(test_dataset)
+    print(f'Test Loss: {test_loss:.4f}, Accuracy: {acc:.2f}%')
+    return test_loss, acc
+# Run training for 100 epochs
+for epoch in range(1, 501):
+    train(epoch)
+test()
