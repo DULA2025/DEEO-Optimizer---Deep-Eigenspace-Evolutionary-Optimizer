@@ -165,7 +165,7 @@ def test():
     acc = 100. * correct / len(test_dataset)
     print(f'Test Loss: {test_loss:.4f}, Accuracy: {acc:.2f}%')
     return test_loss, acc
-# Run training for 100 epochs
+# Run training for 500 epochs
 for epoch in range(1, 501):
     train(epoch)
 test()
