@@ -4,6 +4,8 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torchvision import datasets, transforms
 import numpy as np
+import os
+
 # DEEO Optimizer (with E8 Cartan matrix eigendecomposition from DULA framework, enhanced with mod 6 congruence in eigenvalue selection)
 class DEEO(optim.Optimizer):
     def __init__(self, params, lr=0.001, iterations=3, beta=0.9):
@@ -79,7 +81,7 @@ class DEEO(optim.Optimizer):
         # Enhance stability: boost preconditioner for indices ≡1 or 5 mod 6
         mod6_mask = torch.tensor([i % 6 in [1, 5] for i in range(8)], device=self.device)
         preconditioner = 1 / torch.sqrt(eigenvals_tiled + 1e-3)
-        preconditioner[:, mod6_mask] *= 1.1  # Slight boost for "good" congruence classes
+        preconditioner[:, mod6_mask] *= 1.1 # Slight boost for "good" congruence classes
         preconditioner = torch.clamp(preconditioner, 0.1, 10)
         update_eig = lr_adapt * (grad_eig * preconditioner)
         # Iterative damping
@@ -120,9 +122,22 @@ class EMNISTMLP(nn.Module):
         x = F.relu(self.fc2(x))
         x = self.fc3(x)
         return F.log_softmax(x, dim=1)
-# Data loaders
+# Data loaders with manual dataset check
+data_dir = './EMNIST/raw'
+required_files = [
+    'emnist-digits-train-images-idx3-ubyte',
+    'emnist-digits-train-labels-idx1-ubyte',
+    'emnist-digits-test-images-idx3-ubyte',
+    'emnist-digits-test-labels-idx1-ubyte'
+]
+for file in required_files:
+    if not os.path.exists(os.path.join(data_dir, file)):
+        print(f"Error: Required file {file} not found in {data_dir}. Please place the EMNIST dataset files here (e.g., extracted from emnist.tar.gz).")
+        print("Download EMNIST manually from https://www.nist.gov/itl/products-and-services/emnist-dataset if needed.")
+        exit(1)
+
 transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
-train_dataset = datasets.EMNIST('.', split='digits', train=True, download=True, transform=transform)
+train_dataset = datasets.EMNIST('.', split='digits', train=True, download=False, transform=transform)
 test_dataset = datasets.EMNIST('.', split='digits', train=False, transform=transform)
 train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=64, shuffle=True)
 test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=1000, shuffle=False)
@@ -169,3 +184,5 @@ def test():
 for epoch in range(1, 501):
     train(epoch)
 test()
+torch.save(model.state_dict(), 'emnist_model.pth')
+print("Model saved as 'emnist_model.pth'")
